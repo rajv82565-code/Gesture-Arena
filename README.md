@@ -46,40 +46,51 @@ The enemy uses a **3-layer AI brain** — not random, genuinely strategic:
 
 ---
 
-## 🚀 Installation
-
-```bash
-# 1. Clone the repo
-git clone https://github.com/YOUR_USERNAME/gesture-arena.git
-cd gesture-arena
-
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. Run
-python gesture_arena.py
-```
-
-> On first run, the MediaPipe hand model (~8MB) downloads automatically. Only happens once.
+![Gesture Arena Project Poster](gesture_arena_project_poster.jpg)
 
 ---
 
-## 📋 Requirements
+## 🎮 Game Modes
 
-- Python 3.10+
-- Webcam
-- Good lighting
-- Hand 30–60cm from camera
+### 1. 🤖 Single Player (vs Adaptive AI)
+- Challenge an AI that learns your gesture frequency, counters your combos, and adapts across **Easy**, **Normal**, and **Hard** modes.
+
+### 2. 👥 2-Player Local PvP (Split-Screen on 1 Webcam)
+- Battle a friend side-by-side on the same camera!
+- **Player 1 (Left hand in camera frame)**: Controls the Green Fighter.
+- **Player 2 (Right hand in camera frame)**: Controls the Red Fighter.
+- Independent hold timers, real-time projectile dodging, and guard-breaking specials!
 
 ---
 
 ## 🕹️ Controls
 
-| Key | Action |
+| Key / Action | Function |
 |---|---|
-| Hold gesture 0.25s | Fire |
-| `R` | Restart |
-| `ESC` | Back to menu |
+| Hold Gesture (0.25s) | Trigger Attack / Defend / Shoot / Special |
+| `F11` or `F` | Toggle Fullscreen on / off |
+| `1` or `2` | Select Mode on Main Menu |
+| `R` | Instant Rematch / Restart |
+| `ESC` | Back to Menu / Quit |
+
+---
+
+## 🚀 Installation & Running
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/rajv82565-code/Gesture-Arena.git
+cd Gesture-Arena
+
+# 2. Install dependencies
+pip install -r Requirements.txt
+
+# 3. Run the game
+python gesture.py
+# (or python main.py)
+```
+
+> On first run, the MediaPipe hand model (`hand_landmarker.task`) downloads automatically (~8MB).
 
 ---
 
@@ -87,35 +98,10 @@ python gesture_arena.py
 
 | Library | Purpose |
 |---|---|
-| MediaPipe | Hand landmark detection (21 keypoints) |
-| OpenCV | Camera capture + frame processing |
-| Pygame | Game loop, rendering, UI |
-| NumPy | Frame array manipulation |
-
----
-
-## 📁 Project Structure
-
-```
-gesture-arena/
-├── gesture_arena.py     # Main game
-├── requirements.txt     # Dependencies
-├── README.md            # This file
-└── .gitignore           # Excludes model file and cache
-```
-
----
-
-## 💡 How It Works
-
-```
-Webcam → MediaPipe (21 hand keypoints)
-       → Finger state detection (tip vs pip y-comparison)
-       → Gesture classification (fist/palm/point/two)
-       → Hold timer (0.25s)
-       → Game logic + AI Brain
-       → Pygame render
-```
+| MediaPipe (Tasks Vision) | Real-time dual hand landmark detection (21 keypoints per hand) |
+| OpenCV | Webcam capture, frame flipping, and visual HUD overlays |
+| Pygame | Game loop, particle systems, animations, scaled fullscreen |
+| NumPy | High-performance matrix & frame operations |
 
 ---
 

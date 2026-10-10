@@ -140,18 +140,19 @@ DIFFICULTY = {
 #  GESTURE DETECTOR
 # ─────────────────────────────────────────────
 class GestureDetector:
-    def __init__(self):
+    def __init__(self, num_hands=2):
         ensure_model()
         opts = HandLandmarkerOptions(
             base_options=mp_python.BaseOptions(model_asset_path=MODEL_PATH),
             running_mode=RunningMode.IMAGE,
-            num_hands=1,
-            min_hand_detection_confidence=0.6,
-            min_hand_presence_confidence=0.6,
+            num_hands=num_hands,
+            min_hand_detection_confidence=0.55,
+            min_hand_presence_confidence=0.55,
             min_tracking_confidence=0.5,
         )
         self.detector = HandLandmarker.create_from_options(opts)
         self.current_gesture = "unknown"
+        self.current_gesture_p2 = "unknown"
 
     def _fingers_up(self, lm):
         f = [lm[TIPS[0]].x < lm[PIPS[0]].x]
@@ -168,13 +169,13 @@ class GestureDetector:
         if f[1] and f[2] and not f[3] and not f[4]:            return "two"
         return "unknown"
 
-    def _draw_hand(self, frame, lm):
+    def _draw_hand(self, frame, lm, line_col=(255,220,0), dot_col=(0,255,120)):
         h, w = frame.shape[:2]
         pts = [(int(l.x*w), int(l.y*h)) for l in lm]
         for a, b in HAND_CONNECTIONS:
-            cv2.line(frame, pts[a], pts[b], (255,220,0), 2)
+            cv2.line(frame, pts[a], pts[b], line_col, 2)
         for pt in pts:
-            cv2.circle(frame, pt, 4, (0,255,120), -1)
+            cv2.circle(frame, pt, 4, dot_col, -1)
 
     def detect(self, frame):
         rgb    = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -187,6 +188,33 @@ class GestureDetector:
             g = self._classify(lm)
         self.current_gesture = g
         return frame, g
+
+    def detect_pvp(self, frame):
+        rgb    = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        res    = self.detector.detect(mp_img)
+        g1, g2 = "unknown", "unknown"
+        h, w = frame.shape[:2]
+
+        # Draw central divider line on webcam frame
+        cv2.line(frame, (w // 2, 0), (w // 2, h), (90, 90, 130), 2)
+        cv2.putText(frame, "P1 (LEFT)", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (50, 200, 80), 1)
+        cv2.putText(frame, "P2 (RIGHT)", (w // 2 + 10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 50, 50), 1)
+
+        if res.hand_landmarks:
+            for lm in res.hand_landmarks:
+                avg_x = sum(l.x for l in lm) / len(lm)
+                # Video is mirrored with cv2.flip(frame, 1) before detect_pvp
+                if avg_x < 0.5:
+                    self._draw_hand(frame, lm, line_col=(50, 200, 80), dot_col=(0, 255, 120))
+                    g1 = self._classify(lm)
+                else:
+                    self._draw_hand(frame, lm, line_col=(220, 50, 50), dot_col=(255, 140, 0))
+                    g2 = self._classify(lm)
+
+        self.current_gesture = g1
+        self.current_gesture_p2 = g2
+        return frame, g1, g2
 
 
 # ─────────────────────────────────────────────
@@ -385,22 +413,28 @@ def spawn_particles(lst, x, y, color, n=18):
 
 
 class Projectile:
-    def __init__(self, x, y):
+    def __init__(self, x, y, direction=1, color=YELLOW):
         self.x, self.y = float(x), float(y)
-        self.vx = 520
+        self.direction = direction
+        self.vx = 520 * direction
+        self.color = color
         self.active = True
 
-    def update(self,dt):
-        self.x += self.vx*dt
-        if self.x > WIN_W: self.active = False
+    def update(self, dt):
+        self.x += self.vx * dt
+        if self.direction > 0 and self.x > WIN_W:
+            self.active = False
+        elif self.direction < 0 and self.x < 0:
+            self.active = False
 
-    def draw(self,surf):
-        pygame.draw.circle(surf, YELLOW, (int(self.x),int(self.y)), 9)
-        pygame.draw.circle(surf, WHITE,  (int(self.x),int(self.y)), 4)
+    def draw(self, surf):
+        pygame.draw.circle(surf, self.color, (int(self.x), int(self.y)), 9)
+        pygame.draw.circle(surf, WHITE, (int(self.x), int(self.y)), 4)
         # trail
-        for i in range(1,5):
-            tx = int(self.x - i*14)
-            pygame.draw.circle(surf, (180,160,0), (tx,int(self.y)), max(1,9-i*2))
+        trail_col = (180, 160, 0) if self.color == YELLOW else (210, 60, 60)
+        for i in range(1, 5):
+            tx = int(self.x - self.direction * i * 14)
+            pygame.draw.circle(surf, trail_col, (tx, int(self.y)), max(1, 9 - i * 2))
 
 
 # ─────────────────────────────────────────────
@@ -516,8 +550,10 @@ def difficulty_screen(screen, clock):
                     selected = (selected+1) % 3
                 if event.key in (pygame.K_RETURN, pygame.K_SPACE):
                     return options[selected]
+                if event.key in (pygame.K_F11, pygame.K_f):
+                    pygame.display.toggle_fullscreen()
                 if event.key == pygame.K_ESCAPE:
-                    pygame.quit(); sys.exit()
+                    return "back"
             if event.type == pygame.MOUSEBUTTONDOWN:
                 mx, my = pygame.mouse.get_pos()
                 for i in range(3):
@@ -614,7 +650,7 @@ def difficulty_screen(screen, clock):
                 screen.blit(badge, (cx+card_w//2-badge.get_width()//2, cy+card_h-26))
 
         # Controls hint
-        hint = font_small.render("← → to browse   ENTER to start   ESC to quit", True, (80,80,110))
+        hint = font_small.render("← → to browse   ENTER to start   ESC to mode menu   F11 to toggle fullscreen", True, (80,80,110))
         screen.blit(hint, (WIN_W//2-hint.get_width()//2, WIN_H-35))
 
         pygame.display.flip()
@@ -713,6 +749,8 @@ def game(screen, clock, difficulty_key: str):
             if event.type == pygame.QUIT:
                 cap.release(); pygame.quit(); sys.exit()
             if event.type == pygame.KEYDOWN:
+                if event.key in (pygame.K_F11, pygame.K_f):
+                    pygame.display.toggle_fullscreen()
                 if event.key == pygame.K_ESCAPE:
                     cap.release(); return "menu"
                 if event.key == pygame.K_r and game_over:
@@ -911,6 +949,504 @@ def game(screen, clock, difficulty_key: str):
         pygame.display.flip()
 
     cap.release()
+    return "menu"
+
+
+# ─────────────────────────────────────────────
+#  MODE SELECTION SCREEN
+# ─────────────────────────────────────────────
+def mode_select_screen(screen, clock):
+    font_title = pygame.font.SysFont("consolas", 50, bold=True)
+    font_big   = pygame.font.SysFont("consolas", 28, bold=True)
+    font_mid   = pygame.font.SysFont("consolas", 20, bold=True)
+    font_small = pygame.font.SysFont("consolas", 15)
+    font_tiny  = pygame.font.SysFont("consolas", 13)
+
+    modes = [
+        {
+            "id": "single",
+            "title": "SINGLE PLAYER",
+            "subtitle": "VS AI Opponent",
+            "icon": "🤖",
+            "color": CYAN,
+            "desc": "Duel against an adaptive AI fighter that learns your patterns across 3 difficulty levels.",
+            "features": ["1 Player on Camera", "Adaptive AI Learning", "Easy / Normal / Hard", "Combo Streaks"],
+        },
+        {
+            "id": "pvp",
+            "title": "2-PLAYER LOCAL PVP",
+            "subtitle": "Split-Screen Dual Hand",
+            "icon": "⚔️",
+            "color": ORANGE,
+            "desc": "Battle a friend side-by-side on 1 webcam! Left hand controls P1, Right hand controls P2.",
+            "features": ["2 Players on 1 Webcam", "Real-Time Duel", "Guard Breaking Specials", "Independent Hold Gauges"],
+        },
+    ]
+    selected = 0
+    tick = 0
+
+    card_w, card_h = 360, 340
+    card_gap       = 40
+    total_w        = 2 * card_w + card_gap
+    start_x        = WIN_W // 2 - total_w // 2
+
+    while True:
+        dt = clock.tick(60) / 1000
+        tick += 1
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if event.type == pygame.KEYDOWN:
+                if event.key in (pygame.K_F11, pygame.K_f):
+                    pygame.display.toggle_fullscreen()
+                if event.key in (pygame.K_LEFT, pygame.K_a):
+                    selected = 0
+                if event.key in (pygame.K_RIGHT, pygame.K_d):
+                    selected = 1
+                if event.key == pygame.K_1:
+                    return "single"
+                if event.key == pygame.K_2:
+                    return "pvp"
+                if event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    return modes[selected]["id"]
+                if event.key == pygame.K_ESCAPE:
+                    pygame.quit(); sys.exit()
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                mx, my = pygame.mouse.get_pos()
+                for i in range(2):
+                    cx = start_x + i * (card_w + card_gap)
+                    cy = WIN_H // 2 - card_h // 2 + 10
+                    if cx <= mx <= cx + card_w and cy <= my <= cy + card_h:
+                        if selected == i:
+                            return modes[i]["id"]
+                        selected = i
+            if event.type == pygame.MOUSEMOTION:
+                mx, my = pygame.mouse.get_pos()
+                for i in range(2):
+                    cx = start_x + i * (card_w + card_gap)
+                    cy = WIN_H // 2 - card_h // 2 + 10
+                    if cx <= mx <= cx + card_w and cy <= my <= cy + card_h:
+                        selected = i
+
+        draw_arena_bg(screen, tick)
+
+        title = font_title.render("⚔  GESTURE ARENA  ⚔", True, GOLD)
+        sub   = font_mid.render("Select Game Mode", True, (160, 160, 200))
+        screen.blit(title, (WIN_W // 2 - title.get_width() // 2, 35))
+        screen.blit(sub,   (WIN_W // 2 - sub.get_width() // 2, 95))
+
+        for i, m in enumerate(modes):
+            cx = start_x + i * (card_w + card_gap)
+            cy = WIN_H // 2 - card_h // 2 + 10
+            sel = (i == selected)
+
+            if sel:
+                for gw in range(16, 0, -4):
+                    s = pygame.Surface((card_w + gw * 2, card_h + gw * 2), pygame.SRCALPHA)
+                    ac = int(35 + 22 * math.sin(tick * 0.08))
+                    pygame.draw.rect(s, (*m["color"], ac), (0, 0, card_w + gw * 2, card_h + gw * 2), border_radius=18)
+                    screen.blit(s, (cx - gw, cy - gw))
+                bg = (32, 32, 52)
+            else:
+                bg = (18, 18, 30)
+
+            pygame.draw.rect(screen, bg, (cx, cy, card_w, card_h), border_radius=16)
+            pygame.draw.rect(screen, m["color"] if sel else (50, 50, 80),
+                             (cx, cy, card_w, card_h), 3 if sel else 1, border_radius=16)
+
+            # Icon
+            icon_t = font_title.render(m["icon"], True, m["color"])
+            screen.blit(icon_t, (cx + card_w // 2 - icon_t.get_width() // 2, cy + 18))
+
+            # Title
+            mt = font_big.render(m["title"], True, m["color"] if sel else (200, 200, 200))
+            st = font_small.render(m["subtitle"], True, YELLOW if sel else (140, 140, 160))
+            screen.blit(mt, (cx + card_w // 2 - mt.get_width() // 2, cy + 78))
+            screen.blit(st, (cx + card_w // 2 - st.get_width() // 2, cy + 112))
+
+            # Features
+            for fi, feat in enumerate(m["features"]):
+                fy = cy + 145 + fi * 28
+                pygame.draw.circle(screen, m["color"] if sel else (80, 80, 100), (cx + 28, fy + 8), 4)
+                ft = font_small.render(feat, True, WHITE if sel else (160, 160, 180))
+                screen.blit(ft, (cx + 42, fy))
+
+            # Description
+            desc_words = m["desc"].split()
+            lines = []
+            cur = ""
+            for w in desc_words:
+                test = cur + " " + w if cur else w
+                if font_tiny.size(test)[0] < card_w - 30:
+                    cur = test
+                else:
+                    lines.append(cur)
+                    cur = w
+            if cur: lines.append(cur)
+            for li, ln in enumerate(lines[:2]):
+                lt = font_tiny.render(ln, True, (130, 130, 160) if not sel else (190, 190, 220))
+                screen.blit(lt, (cx + 18, cy + 265 + li * 16))
+
+            if sel:
+                badge = font_small.render("▶ PRESS ENTER TO PLAY ◀", True, m["color"])
+                screen.blit(badge, (cx + card_w // 2 - badge.get_width() // 2, cy + card_h - 26))
+
+        # Bottom hint
+        hint = font_small.render("Press 1 or 2  |  ← / → Arrow Keys  |  F11 Fullscreen  |  ESC Quit", True, (130, 130, 160))
+        screen.blit(hint, (WIN_W // 2 - hint.get_width() // 2, WIN_H - 42))
+
+        pygame.display.flip()
+
+
+# ─────────────────────────────────────────────
+#  2-PLAYER LOCAL PVP GAME
+# ─────────────────────────────────────────────
+def game_two_player(screen, clock):
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+    detector = GestureDetector(num_hands=2)
+
+    font_big   = pygame.font.SysFont("consolas", 40, bold=True)
+    font_mid   = pygame.font.SysFont("consolas", 24, bold=True)
+    font_small = pygame.font.SysFont("consolas", 16, bold=True)
+    font_tiny  = pygame.font.SysFont("consolas", 13)
+
+    p1_hp = PLAYER_MAX_HP
+    p2_hp = PLAYER_MAX_HP
+
+    projs = []
+    particles = []
+
+    p1_last_gesture = "unknown"
+    p2_last_gesture = "unknown"
+    p1_hold_start = 0.0
+    p2_hold_start = 0.0
+    p1_triggered = False
+    p2_triggered = False
+
+    p1_combo_count = 0
+    p1_combo_timer = 0.0
+    p1_last_gesture_time = 0.0
+
+    p2_combo_count = 0
+    p2_combo_timer = 0.0
+    p2_last_gesture_time = 0.0
+
+    p1_attacking = False
+    p1_atk_timer = 0.0
+    p2_attacking = False
+    p2_atk_timer = 0.0
+
+    p1_flash = 0.0
+    p2_flash = 0.0
+
+    message = ""
+    msg_timer = 0.0
+    game_over = False
+    winner = ""
+    cam_surf = None
+    tick = 0
+
+    def show_msg(msg, dur=1.1):
+        nonlocal message, msg_timer
+        message, msg_timer = msg, dur
+
+    def p1_action(gesture):
+        nonlocal p1_combo_count, p1_combo_timer, p1_last_gesture_time
+        nonlocal p1_attacking, p1_atk_timer, p2_flash, p2_hp
+
+        _, color, dmg = GESTURE_LABELS.get(gesture, ("", GRAY, 0))
+        p1_attacking = True
+        p1_atk_timer = 0.5
+
+        if gesture == "palm":
+            show_msg("P1 (LEFT): 🛡️ GUARD UP!", 0.7)
+            return
+
+        now = time.time()
+        p1_combo_count = (p1_combo_count + 1
+                          if now - p1_last_gesture_time < COMBO_WINDOW and p1_combo_count > 0
+                          else 1)
+        p1_combo_timer = COMBO_WINDOW
+        p1_last_gesture_time = now
+
+        actual = dmg * (1 + (p1_combo_count - 1) * 0.3)
+
+        if gesture == "point":
+            projs.append(Projectile(255, WIN_H // 2 + 42, direction=1, color=CYAN))
+            show_msg(f"P1 💥 FIRED ENERGY BOLT!", 0.8)
+        elif gesture == "two":
+            # Guard-breaker! Bypasses palm block
+            p2_hp = max(0, p2_hp - actual)
+            p2_flash = 0.35
+            spawn_particles(particles, 660, WIN_H // 2 + 30, PURPLE, 35)
+            show_msg(f"⚡ P1 SPECIAL GUARD-BREAK! -{int(actual)} HP", 1.1)
+        elif gesture == "fist":
+            # Melee punch
+            if p2_last_gesture == "palm":
+                actual *= (1.0 - DEFEND_BLOCK)
+                show_msg(f"P2 🛡️ BLOCKED P1 FIST! -{int(actual)} HP", 0.9)
+            else:
+                show_msg(f"P1 ✊ PUNCH x{p1_combo_count}! -{int(actual)} HP", 0.9)
+            p2_hp = max(0, p2_hp - actual)
+            p2_flash = 0.3
+            spawn_particles(particles, 660, WIN_H // 2 + 30, GREEN, 22)
+
+    def p2_action(gesture):
+        nonlocal p2_combo_count, p2_combo_timer, p2_last_gesture_time
+        nonlocal p2_attacking, p2_atk_timer, p1_flash, p1_hp
+
+        _, color, dmg = GESTURE_LABELS.get(gesture, ("", GRAY, 0))
+        p2_attacking = True
+        p2_atk_timer = 0.5
+
+        if gesture == "palm":
+            show_msg("P2 (RIGHT): 🛡️ GUARD UP!", 0.7)
+            return
+
+        now = time.time()
+        p2_combo_count = (p2_combo_count + 1
+                          if now - p2_last_gesture_time < COMBO_WINDOW and p2_combo_count > 0
+                          else 1)
+        p2_combo_timer = COMBO_WINDOW
+        p2_last_gesture_time = now
+
+        actual = dmg * (1 + (p2_combo_count - 1) * 0.3)
+
+        if gesture == "point":
+            projs.append(Projectile(645, WIN_H // 2 + 42, direction=-1, color=ORANGE))
+            show_msg(f"P2 💥 FIRED ENERGY BOLT!", 0.8)
+        elif gesture == "two":
+            # Guard-breaker! Bypasses palm block
+            p1_hp = max(0, p1_hp - actual)
+            p1_flash = 0.35
+            spawn_particles(particles, 240, WIN_H // 2 + 30, PURPLE, 35)
+            show_msg(f"⚡ P2 SPECIAL GUARD-BREAK! -{int(actual)} HP", 1.1)
+        elif gesture == "fist":
+            # Melee punch
+            if p1_last_gesture == "palm":
+                actual *= (1.0 - DEFEND_BLOCK)
+                show_msg(f"P1 🛡️ BLOCKED P2 FIST! -{int(actual)} HP", 0.9)
+            else:
+                show_msg(f"P2 ✊ PUNCH x{p2_combo_count}! -{int(actual)} HP", 0.9)
+            p1_hp = max(0, p1_hp - actual)
+            p1_flash = 0.3
+            spawn_particles(particles, 240, WIN_H // 2 + 30, RED, 22)
+
+    # ── GAME LOOP ──
+    while True:
+        dt = clock.tick(FPS) / 1000.0
+        tick += 1
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                cap.release(); pygame.quit(); sys.exit()
+            if event.type == pygame.KEYDOWN:
+                if event.key in (pygame.K_F11, pygame.K_f):
+                    pygame.display.toggle_fullscreen()
+                if event.key == pygame.K_ESCAPE:
+                    cap.release(); return "menu"
+                if event.key == pygame.K_r and game_over:
+                    cap.release(); return "restart"
+
+        if not game_over:
+            ret, frame = cap.read()
+            if ret:
+                frame = cv2.flip(frame, 1)
+                frame, g1, g2 = detector.detect_pvp(frame)
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                rgb = cv2.resize(rgb, (CAM_W, CAM_H))
+                cam_surf = pygame.surfarray.make_surface(np.transpose(rgb, (1, 0, 2)))
+            else:
+                g1, g2 = "unknown", "unknown"
+
+            # P1 gesture hold
+            if g1 != p1_last_gesture:
+                p1_last_gesture = g1
+                p1_hold_start = time.time()
+                p1_triggered = False
+            elif not p1_triggered and g1 != "unknown":
+                if time.time() - p1_hold_start >= HOLD_THRESHOLD:
+                    p1_triggered = True
+                    p1_action(g1)
+
+            # P2 gesture hold
+            if g2 != p2_last_gesture:
+                p2_last_gesture = g2
+                p2_hold_start = time.time()
+                p2_triggered = False
+            elif not p2_triggered and g2 != "unknown":
+                if time.time() - p2_hold_start >= HOLD_THRESHOLD:
+                    p2_triggered = True
+                    p2_action(g2)
+
+            # Timers
+            p1_combo_timer = max(0, p1_combo_timer - dt)
+            if p1_combo_timer <= 0: p1_combo_count = 0
+            p1_atk_timer = max(0, p1_atk_timer - dt)
+            p1_attacking = (p1_atk_timer > 0)
+
+            p2_combo_timer = max(0, p2_combo_timer - dt)
+            if p2_combo_timer <= 0: p2_combo_count = 0
+            p2_atk_timer = max(0, p2_atk_timer - dt)
+            p2_attacking = (p2_atk_timer > 0)
+
+            # Projectiles
+            for p in projs:
+                p.update(dt)
+                if p.active:
+                    # P1 projectile moving right towards P2 (x=660)
+                    if p.direction > 0 and p.x >= 640:
+                        p.active = False
+                        if p2_last_gesture == "palm":
+                            actual = SHOOT_DAMAGE * (1.0 - DEFEND_BLOCK)
+                            show_msg(f"P2 🛡️ BLOCKED P1 BOLT! -{int(actual)} HP", 0.9)
+                        else:
+                            actual = SHOOT_DAMAGE
+                            show_msg(f"P1 💥 BOLT HIT P2! -{int(actual)} HP", 0.9)
+                        p2_hp = max(0, p2_hp - actual)
+                        p2_flash = 0.3
+                        spawn_particles(particles, 660, WIN_H // 2 + 42, CYAN, 20)
+                    # P2 projectile moving left towards P1 (x=240)
+                    elif p.direction < 0 and p.x <= 260:
+                        p.active = False
+                        if p1_last_gesture == "palm":
+                            actual = SHOOT_DAMAGE * (1.0 - DEFEND_BLOCK)
+                            show_msg(f"P1 🛡️ BLOCKED P2 BOLT! -{int(actual)} HP", 0.9)
+                        else:
+                            actual = SHOOT_DAMAGE
+                            show_msg(f"P2 💥 BOLT HIT P1! -{int(actual)} HP", 0.9)
+                        p1_hp = max(0, p1_hp - actual)
+                        p1_flash = 0.3
+                        spawn_particles(particles, 240, WIN_H // 2 + 42, ORANGE, 20)
+
+            projs[:] = [p for p in projs if p.active]
+            particles[:] = [p for p in particles if p.update(dt)]
+            p1_flash = max(0, p1_flash - dt)
+            p2_flash = max(0, p2_flash - dt)
+            msg_timer = max(0, msg_timer - dt)
+
+            if p1_hp <= 0:
+                game_over, winner = True, "PLAYER 2"
+            elif p2_hp <= 0:
+                game_over, winner = True, "PLAYER 1"
+
+        # ══════════════════════ DRAW ══════════════════════
+        draw_arena_bg(screen, tick)
+
+        p1_def = (p1_last_gesture == "palm")
+        p1_atk = p1_attacking and p1_last_gesture not in ("palm", "unknown")
+        draw_fighter(screen, 240, WIN_H // 2 + 58, GREEN, p1_def, p1_atk, 1)
+
+        p2_def = (p2_last_gesture == "palm")
+        p2_atk = p2_attacking and p2_last_gesture not in ("palm", "unknown")
+        draw_fighter(screen, 660, WIN_H // 2 + 58, RED, p2_def, p2_atk, -1)
+
+        for p in projs:     p.draw(screen)
+        for p in particles: p.draw(screen)
+
+        # Flash overlays
+        if p1_flash > 0:
+            s1 = pygame.Surface((WIN_W // 2, WIN_H), pygame.SRCALPHA)
+            s1.fill((220, 0, 0, int(p1_flash / 0.35 * 90)))
+            screen.blit(s1, (0, 0))
+        if p2_flash > 0:
+            s2 = pygame.Surface((WIN_W // 2, WIN_H), pygame.SRCALPHA)
+            s2.fill((220, 0, 0, int(p2_flash / 0.35 * 90)))
+            screen.blit(s2, (WIN_W // 2, 0))
+
+        # Health bars
+        draw_health_bar(screen, 30, 45, 290, 22, p1_hp, PLAYER_MAX_HP, GREEN, "PLAYER 1 (LEFT)", font_tiny)
+        draw_health_bar(screen, 630, 45, 290, 22, p2_hp, PLAYER_MAX_HP, RED, "PLAYER 2 (RIGHT)", font_tiny)
+
+        # VS + mode badge
+        vs = font_mid.render("VS", True, YELLOW)
+        screen.blit(vs, (WIN_W // 2 - vs.get_width() // 2, 44))
+        pvp_badge = font_tiny.render("⚔️ 2-PLAYER LOCAL PVP ⚔️", True, ORANGE)
+        screen.blit(pvp_badge, (WIN_W // 2 - pvp_badge.get_width() // 2, 74))
+
+        # Legend at top
+        legend_txt = font_tiny.render("✊ Fist=Attack  |  ✋ Palm=Defend  |  👉 Point=Shoot  |  ✌️ Two=Special", True, (160, 160, 190))
+        screen.blit(legend_txt, (WIN_W // 2 - legend_txt.get_width() // 2, 18))
+
+        # Combo alerts
+        if p1_combo_count > 1:
+            c1 = font_small.render(f"P1 COMBO x{p1_combo_count}!", True, GREEN)
+            screen.blit(c1, (30, 80))
+        if p2_combo_count > 1:
+            c2 = font_small.render(f"P2 COMBO x{p2_combo_count}!", True, RED)
+            screen.blit(c2, (WIN_W - 30 - c2.get_width(), 80))
+
+        # ── Player 1 HUD (bottom-left) ──
+        hx1, hy1 = 16, WIN_H - 118
+        draw_panel(screen, hx1, hy1, 270, 98, border=(50, 200, 80))
+        lbl1, col1, _ = GESTURE_LABELS.get(p1_last_gesture, ("❓ ...", GRAY, 0))
+        screen.blit(font_small.render(f"P1: {lbl1}", True, col1), (hx1 + 10, hy1 + 10))
+
+        hold_el1 = time.time() - p1_hold_start if p1_last_gesture != "unknown" else 0
+        prog1    = min(1.0, hold_el1 / HOLD_THRESHOLD)
+        bar_w = 250
+        pygame.draw.rect(screen, (40, 40, 40), (hx1 + 10, hy1 + 44, bar_w, 10), border_radius=5)
+        if prog1 > 0:
+            pygame.draw.rect(screen, col1, (hx1 + 10, hy1 + 44, int(bar_w * prog1), 10), border_radius=5)
+        screen.blit(font_tiny.render("Hold to fire →", True, (130, 130, 160)), (hx1 + 10, hy1 + 60))
+        screen.blit(font_tiny.render("Controls: Left Webcam Side", True, (100, 200, 120)), (hx1 + 10, hy1 + 78))
+
+        # ── Player 2 HUD (bottom-right) ──
+        hx2, hy2 = WIN_W - 286, WIN_H - 118
+        draw_panel(screen, hx2, hy2, 270, 98, border=(220, 50, 50))
+        lbl2, col2, _ = GESTURE_LABELS.get(p2_last_gesture, ("❓ ...", GRAY, 0))
+        screen.blit(font_small.render(f"P2: {lbl2}", True, col2), (hx2 + 10, hy2 + 10))
+
+        hold_el2 = time.time() - p2_hold_start if p2_last_gesture != "unknown" else 0
+        prog2    = min(1.0, hold_el2 / HOLD_THRESHOLD)
+        pygame.draw.rect(screen, (40, 40, 40), (hx2 + 10, hy2 + 44, bar_w, 10), border_radius=5)
+        if prog2 > 0:
+            pygame.draw.rect(screen, col2, (hx2 + 10, hy2 + 44, int(bar_w * prog2), 10), border_radius=5)
+        screen.blit(font_tiny.render("Hold to fire →", True, (130, 130, 160)), (hx2 + 10, hy2 + 60))
+        screen.blit(font_tiny.render("Controls: Right Webcam Side", True, (240, 110, 110)), (hx2 + 10, hy2 + 78))
+
+        # Camera feed (bottom-center)
+        if cam_surf:
+            cx = WIN_W // 2 - CAM_W // 2
+            cy = WIN_H - CAM_H - 8
+            screen.blit(cam_surf, (cx, cy))
+            pygame.draw.rect(screen, GOLD, (cx, cy, CAM_W, CAM_H), 2)
+            screen.blit(font_tiny.render("📷 P1 (LEFT)  |  P2 (RIGHT)", True, GOLD), (cx + 5, cy + 5))
+
+        # Message banner
+        if msg_timer > 0 and message:
+            a = int(255 * min(1.0, msg_timer / 0.35))
+            ms = font_mid.render(message, True, (a, a, a))
+            screen.blit(ms, (WIN_W // 2 - ms.get_width() // 2, 140))
+
+        # ── Game Over overlay ──
+        if game_over:
+            ov = pygame.Surface((WIN_W, WIN_H), pygame.SRCALPHA)
+            ov.fill((0, 0, 0, 185)); screen.blit(ov, (0, 0))
+
+            wcol = GREEN if winner == "PLAYER 1" else RED
+            gt = font_big.render(f"🏆 {winner} WINS! 🏆", True, wcol)
+            screen.blit(gt, (WIN_W // 2 - gt.get_width() // 2, WIN_H // 2 - 75))
+
+            stats_txt = [
+                f"Player 1 remaining HP: {int(p1_hp)}",
+                f"Player 2 remaining HP: {int(p2_hp)}",
+            ]
+            for si, st in enumerate(stats_txt):
+                st_s = font_small.render(st, True, (200, 200, 200))
+                screen.blit(st_s, (WIN_W // 2 - st_s.get_width() // 2, WIN_H // 2 - 15 + si * 28))
+
+            r1 = font_mid.render("R = Rematch   ESC = Mode Menu", True, WHITE)
+            screen.blit(r1, (WIN_W // 2 - r1.get_width() // 2, WIN_H // 2 + 65))
+
+        pygame.display.flip()
+
+    cap.release()
+    return "menu"
 
 
 # ─────────────────────────────────────────────
@@ -918,18 +1454,32 @@ def game(screen, clock, difficulty_key: str):
 # ─────────────────────────────────────────────
 def main():
     pygame.init()
-    screen = pygame.display.set_mode((WIN_W, WIN_H))
+    # Opens in Fullscreen mode by default (scaled smoothly to fit your laptop screen)
+    # Press F11 (or F) anytime to toggle between Fullscreen and Windowed!
+    screen = pygame.display.set_mode((WIN_W, WIN_H), pygame.FULLSCREEN | pygame.SCALED)
     pygame.display.set_caption("⚔️  GESTURE ARENA  ⚔️")
     clock  = pygame.time.Clock()
 
     while True:
-        diff_key = difficulty_screen(screen, clock)
-        result   = game(screen, clock, diff_key)
-        if result == "menu":
-            continue      # back to difficulty screen
-        elif result == "restart":
-            continue      # pick difficulty again
+        mode = mode_select_screen(screen, clock)
+        if mode == "single":
+            while True:
+                diff_key = difficulty_screen(screen, clock)
+                if diff_key == "back":
+                    break
+                result = game(screen, clock, diff_key)
+                if result == "menu":
+                    break
+                elif result == "restart":
+                    continue
+        elif mode == "pvp":
+            while True:
+                result = game_two_player(screen, clock)
+                if result == "menu":
+                    break
+                elif result == "restart":
+                    continue
 
 
 if __name__ == "__main__":
-    main()
+    main()
